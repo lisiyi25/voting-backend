@@ -37,6 +37,16 @@ function cleanName(str) {
     return String(str || '').replace(/[\s\u3000\r\n\t]/g, '').trim();
 }
 
+function parseStudentName(str) {
+    let s = cleanName(str);
+    s = s.replace(/^[\d]+[\.\、\)\]\s]+/, '');
+    return s.trim();
+}
+
+function nameEquals(a, b) {
+    return parseStudentName(a) === parseStudentName(b);
+}
+
 app.get('/health', (_req, res) => {
     res.json({ ok: true, time: new Date().toISOString() });
 });
@@ -91,13 +101,13 @@ app.post('/api/weeks/:weekId/votes', (req, res) => {
     const week = ensureWeek(db, weekId);
     if (!week.config) return res.status(400).send('该周尚未创建，请先在管理端生成二维码');
 
-    const clean = cleanName(name);
-    const isTeacher = clean === cleanName(week.config.t);
-    const isStudent = (week.config.s || []).some(n => cleanName(n) === clean);
+    const clean = parseStudentName(name);
+    const isTeacher = nameEquals(name, week.config.t);
+    const isStudent = (week.config.s || []).some(n => nameEquals(n, name));
     if (!isTeacher && !isStudent) {
         return res.status(400).send('姓名不在名单中');
     }
-    if (week.votes.some(v => cleanName(v.name) === clean)) {
+    if (week.votes.some(v => nameEquals(v.name, name))) {
         return res.status(409).send('已投过票，不能重复投');
     }
     if (scores.length !== week.config.g.length) {
