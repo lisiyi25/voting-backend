@@ -25,6 +25,14 @@ function writeDb(db) {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
 }
 
+// 串行写库，避免 50+ 人同时投票时并发读写导致丢票
+let dbWriteChain = Promise.resolve();
+function withDbLock(fn) {
+    const run = dbWriteChain.then(() => fn());
+    dbWriteChain = run.catch(() => {});
+    return run;
+}
+
 function ensureWeek(db, weekId) {
     if (!db.weeks[weekId]) {
         db.weeks[weekId] = { config: null, votes: [] };
@@ -61,19 +69,22 @@ app.put('/api/weeks/:weekId', (req, res) => {
         return res.status(400).send('小组数据不能为空');
     }
 
-    const db = readDb();
-    const week = ensureWeek(db, weekId);
-    week.config = {
-        w: payload.w,
-        n: payload.n || '',
-        g: payload.g,
-        t: payload.t || '',
-        s: Array.isArray(payload.s) ? payload.s : [],
-        total: Number(payload.total || 0),
-        a: String(payload.a || '').trim()
-    };
-    writeDb(db);
-    res.json({ ok: true });
+    withDbLock(() => {
+        const db = readDb();
+        const week = ensureWeek(db, weekId);
+        week.config = {
+            w: payload.w,
+            n: payload.n || '',
+            g: payload.g,
+            t: payload.t || '',
+            s: Array.isArray(payload.s) ? payload.s : [],
+            total: Number(payload.total || 0),
+            a: String(payload.a || '').trim()
+        };
+        writeDb(db);
+    })
+        .then(() => res.json({ ok: true }))
+        .catch(() => res.status(500).send('保存失败，请重试'));
 });
 
 app.get('/api/weeks/:weekId', (req, res) => {
@@ -97,35 +108,38 @@ app.post('/api/weeks/:weekId/votes', (req, res) => {
         return res.status(400).send('分数必须在0-10之间');
     }
 
-    const db = readDb();
-    const week = ensureWeek(db, weekId);
-    if (!week.config) return res.status(400).send('该周尚未创建，请先在管理端生成二维码');
+    withDbLock(() => {
+        const db = readDb();
+        const week = ensureWeek(db, weekId);
+        if (!week.config) throw { status: 400, msg: '该周尚未创建，请先在管理端生成二维码' };
 
-    const clean = parseStudentName(name);
-    const isTeacher = nameEquals(name, week.config.t);
-    const isStudent = (week.config.s || []).some(n => nameEquals(n, name));
-    if (!isTeacher && !isStudent) {
-        return res.status(400).send('姓名不在名单中');
-    }
-    if (week.votes.some(v => nameEquals(v.name, name))) {
-        return res.status(409).send('已投过票，不能重复投');
-    }
-    if (scores.length !== week.config.g.length) {
-        return res.status(400).send('评分项数量不匹配');
-    }
+        const isTeacher = nameEquals(name, week.config.t);
+        const isStudent = (week.config.s || []).some(n => nameEquals(n, name));
+        if (!isTeacher && !isStudent) throw { status: 400, msg: '姓名不在名单中' };
+        if (week.votes.some(v => nameEquals(v.name, name))) throw { status: 409, msg: '已投过票，不能重复投' };
+        if (scores.length !== week.config.g.length) throw { status: 400, msg: '评分项数量不匹配' };
 
-    week.votes.push({ name, role, scores: scores.map(Number), time });
-    writeDb(db);
-    res.json({ ok: true, count: week.votes.length });
+        week.votes.push({ name, role, scores: scores.map(Number), time });
+        writeDb(db);
+        return week.votes.length;
+    })
+        .then((count) => res.json({ ok: true, count }))
+        .catch((err) => {
+            if (err && err.status) return res.status(err.status).send(err.msg);
+            res.status(500).send('提交失败，请稍后再试');
+        });
 });
 
 app.delete('/api/weeks/:weekId/votes', (req, res) => {
     const { weekId } = req.params;
-    const db = readDb();
-    const week = ensureWeek(db, weekId);
-    week.votes = [];
-    writeDb(db);
-    res.json({ ok: true });
+    withDbLock(() => {
+        const db = readDb();
+        const week = ensureWeek(db, weekId);
+        week.votes = [];
+        writeDb(db);
+    })
+        .then(() => res.json({ ok: true }))
+        .catch(() => res.status(500).send('重置失败，请重试'));
 });
 
 app.listen(PORT, () => {
