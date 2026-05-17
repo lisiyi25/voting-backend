@@ -59,7 +59,8 @@ app.put('/api/weeks/:weekId', (req, res) => {
         g: payload.g,
         t: payload.t || '',
         s: Array.isArray(payload.s) ? payload.s : [],
-        total: Number(payload.total || 0)
+        total: Number(payload.total || 0),
+        a: String(payload.a || '').trim()
     };
     writeDb(db);
     res.json({ ok: true });
